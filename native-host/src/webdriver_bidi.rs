@@ -101,11 +101,11 @@ impl FirefoxWebDriver {
         }))
     }
 
-    pub async fn click_by_uid(&mut self, uid: &str) -> Result<()> {
+    pub async fn click_by_uid(&mut self, _uid: &str) -> Result<()> {
         Ok(())
     }
 
-    pub async fn execute_script(&mut self, script: &str, await_promise: bool) -> Result<serde_json::Value> {
+    pub async fn execute_script(&mut self, _script: &str, _await_promise: bool) -> Result<serde_json::Value> {
         Ok(serde_json::json!({ "result": "not implemented" }))
     }
 }
