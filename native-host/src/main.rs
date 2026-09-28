@@ -655,9 +655,3 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-
-mod rustc_version_runtime {
-    pub fn version() -> String {
-        format!("{}", ::rustc_version_runtime::version())
-    }
-}
