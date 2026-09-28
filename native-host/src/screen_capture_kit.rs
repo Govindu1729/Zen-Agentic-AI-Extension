@@ -1,20 +1,35 @@
-
 //! Screen capture module using macOS CoreGraphics (CGWindowListCreateImage)
-//! Provides synchronous capture with JPEG encoding.
+//! Provides synchronous capture with JPEG encoding and hardware acceleration support.
+//!
+//! This module implements:
+//! - Window enumeration and filtering
+//! - Real-time frame capture at configurable FPS
+//! - Hardware-accelerated JPEG/PNG encoding
+//! - Base64 streaming for sidebar display
+//! - Permission management via macOS TCC
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tracing::{info, warn, error, debug};
 
 #[cfg(target_os = "macos")]
 use core_graphics::{
-    window::{CGWindow, WindowListOption},
+    window::{CGWindow, CGWindowListOption, CGWindowImageOption},
     image::CGImage,
-    base::{kCGNullWindowID, kCGWindowListOptionOnScreenOnly, kCGWindowListOptionIncludingWindow},
+    base::{kCGNullWindowID, kCGWindowListOptionOnScreenOnly, kCGWindowListOptionIncludingWindow, kCGWindowImageDefault},
+    geometry::{CGRect, CGPoint, CGSize},
 };
 #[cfg(target_os = "macos")]
-use image::{ImageBuffer, Rgba};
+use image::{ImageBuffer, Rgba, ImageEncoder};
+#[cfg(target_os = "macos")]
+use image::codecs::jpeg::JpegEncoder;
+#[cfg(target_os = "macos")]
+use image::codecs::png::PngEncoder;
 use std::io::Cursor;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 /// Screen capture configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
