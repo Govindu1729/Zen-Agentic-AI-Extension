@@ -44,58 +44,6 @@ zen-agentic-extension/
     └── install-macos.sh
 ```
 
-## Phase 1: Core Infrastructure (Current)
-
-### Goals
-- [ ] Set up Rust native host with basic IPC
-- [ ] Implement 32-bit length-prefixed JSON messaging
-- [ ] Create minimal WebExtension sidebar
-- [ ] Establish browser ↔ native host communication
-
-### Deliverables
-1. Native host binary that spawns and handles stdio messages
-2. WebExtension with `sidebar_action` and `connectNative`
-3. Basic message protocol (ping/pong, DOM snapshot request)
-
-## Phase 2: Visual Context Engine
-
-### Goals
-- [ ] Integrate ScreenCaptureKit via `screencapturekit-rs`
-- [ ] Implement window enumeration for Zen Browser
-- [ ] Add frame capture at 60 FPS with hardware encoding
-- [ ] Build TCC permission onboarding flow
-
-### Deliverables
-1. macOS screen capture module with zero-copy frame delivery
-2. JPEG/WebP compression pipeline
-3. Permission request UI in extension sidebar
-
-## Phase 3: MCP Server & DOM Automation
-
-### Goals
-- [ ] Implement MCP server in native host
-- [ ] Expose tools: `take_snapshot`, `click_by_uid`, `evaluate_script`
-- [ ] Integrate WebDriver BiDi via Marionette protocol
-- [ ] Add UID mapping for interactive DOM elements
-
-### Deliverables
-1. MCP-compatible tool definitions
-2. GeckoDriver integration for Zen Browser
-3. DOM serialization with bounding boxes and UIDs
-
-## Phase 4: ML Backend & Agentic RAG
-
-### Goals
-- [ ] Python subprocess for NLP processing
-- [ ] Local embedding model (MiniLM/BERT distilled)
-- [ ] Vector database for browsing history
-- [ ] Query dissection and context retrieval
-
-### Deliverables
-1. Text preprocessing pipeline (spaCy, NLTK)
-2. Embedding generation and storage
-3. RAG query engine with relevance scoring
-
 ## Platform Support
 
 | Feature | macOS (Apple Silicon) | Windows | Linux |
