@@ -1,20 +1,20 @@
 # ML Backend Dependencies for Zen Agentic Extension
-# All packages are free and can run locally
+# Free packages that can run locally without cloud API
+# Minimal Phase 1 setup uses only Python standard library
 
-# Core NLP (Phase 1-2: Basic, Phase 3-4: Full integration)
-# nltk>=3.8.0           # Natural Language Toolkit
-# spaCy>=3.6.0          # Industrial-strength NLP (optional, larger download)
-
-# For Phase 1: No external dependencies - uses built-in Python
-
-# For Phase 4 upgrade, uncomment these:
-# transformers>=4.30.0   # Hugging Face transformers for BERT, etc.
-# sentence-transformers>=2.2.0  # For embeddings
-# torch>=2.0.0          # PyTorch backend (or use onnxruntime for lighter weight)
-
-# Vector database for RAG
-# chromadb>=0.4.0       # Local vector database
-# or use sqlite with numpy for simpler setup
+# Optional: Install for advanced NLP (Phase 4)
+# pip install nltk
+# nltk.download('punkt')
+# nltk.download('averaged_perceptron_tagger')
+# nltk.download('words')
 
 # Utilities
-numpy>=1.24.0           # Numerical operations
+numpy>=1.24.0         # Numerical operations (for embeddings if needed)
+requests>=2.28.0      # HTTP requests for API calls (if using external services)
+
+# For Phase 4 (advanced ML with local models):
+# pip install transformers sentence-transformers torch chromadb
+# transformers>=4.30.0     # Hugging Face transformers
+# sentence-transformers>=2.2.0  # For embeddings
+# torch>=2.0.0            # PyTorch backend
+# chromadb>=0.4.0         # Vector database for RAG
