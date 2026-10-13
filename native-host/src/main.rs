@@ -14,7 +14,7 @@ mod ml_bridge;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, error, warn, debug};
+use tracing::{info, error, debug};
 
 /// Application state shared across subsystems
 struct AppState {
@@ -50,7 +50,7 @@ async fn handle_message(
     state: Arc<Mutex<AppState>>,
     message: ipc::NativeMessage,
 ) -> Result<ipc::NativeMessage> {
-    let state_guard = state.lock().await;
+    let mut state_guard = state.lock().await;
 
     match message.method.as_str() {
         "ping" => Ok(ipc::NativeMessage::response(
@@ -356,7 +356,7 @@ async fn handle_message(
             match state_guard.webdriver.execute_script(script, await_promise).await {
                 Ok(result) => Ok(ipc::NativeMessage::response(
                     message.id,
-                    result,
+                    serde_json::to_value(result)?,
                 )),
                 Err(e) => Ok(ipc::NativeMessage::error_response(
                     message.id,
@@ -371,7 +371,7 @@ async fn handle_message(
                 message.id,
                 serde_json::json!({
                     "version": env!("CARGO_PKG_VERSION"),
-                    "rust_version": rustc_version_runtime::version(),
+                    "rust_version": format!("{}", rustc_version_runtime::version()),
                     "target": std::env::consts::OS,
                 }),
             ))
@@ -388,7 +388,7 @@ async fn handle_message(
             match state_guard.ml_bridge.analyze_sentiment(text).await {
                 Ok(result) => Ok(ipc::NativeMessage::response(
                     message.id,
-                    result,
+                    serde_json::to_value(result)?,
                 )),
                 Err(e) => Ok(ipc::NativeMessage::error_response(
                     message.id,
@@ -409,7 +409,7 @@ async fn handle_message(
             match state_guard.ml_bridge.extract_entities(text).await {
                 Ok(result) => Ok(ipc::NativeMessage::response(
                     message.id,
-                    result,
+                    serde_json::to_value(result)?,
                 )),
                 Err(e) => Ok(ipc::NativeMessage::error_response(
                     message.id,
@@ -434,7 +434,7 @@ async fn handle_message(
             match state_guard.ml_bridge.summarize(text, max_length).await {
                 Ok(result) => Ok(ipc::NativeMessage::response(
                     message.id,
-                    result,
+                    serde_json::to_value(result)?,
                 )),
                 Err(e) => Ok(ipc::NativeMessage::error_response(
                     message.id,
@@ -459,7 +459,7 @@ async fn handle_message(
             match state_guard.ml_bridge.extract_keywords(text, top_k).await {
                 Ok(result) => Ok(ipc::NativeMessage::response(
                     message.id,
-                    result,
+                    serde_json::to_value(result)?,
                 )),
                 Err(e) => Ok(ipc::NativeMessage::error_response(
                     message.id,
@@ -480,7 +480,7 @@ async fn handle_message(
             match state_guard.ml_bridge.generate_embedding(text).await {
                 Ok(result) => Ok(ipc::NativeMessage::response(
                     message.id,
-                    result,
+                    serde_json::to_value(result)?,
                 )),
                 Err(e) => Ok(ipc::NativeMessage::error_response(
                     message.id,
@@ -506,7 +506,7 @@ async fn handle_message(
             match state_guard.ml_bridge.query_rag(query, top_k).await {
                 Ok(result) => Ok(ipc::NativeMessage::response(
                     message.id,
-                    result,
+                    serde_json::to_value(result)?,
                 )),
                 Err(e) => Ok(ipc::NativeMessage::error_response(
                     message.id,
@@ -533,7 +533,7 @@ async fn handle_message(
                     .unwrap_or_default();
                 let timestamp = doc.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
 
-                Ok(ml_bridge::RagDocument {
+                Ok::<ml_bridge::RagDocument, anyhow::Error>(ml_bridge::RagDocument {
                     id,
                     content,
                     meta: metadata,
@@ -546,7 +546,7 @@ async fn handle_message(
                     match state_guard.ml_bridge.rag_store(docs).await {
                         Ok(result) => Ok(ipc::NativeMessage::response(
                             message.id,
-                            result,
+                            serde_json::to_value(result)?,
                         )),
                         Err(e) => Ok(ipc::NativeMessage::error_response(
                             message.id,

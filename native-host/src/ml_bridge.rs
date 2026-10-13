@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::time::timeout;
 use std::path::PathBuf;
 use std::collections::HashMap;
-use log::{info, warn, error, debug};
+use log::{info, warn, error};
 
 /// Configuration for the ML Bridge
 #[derive(Debug, Clone)]
@@ -119,8 +119,12 @@ impl MlBridge {
         }
     }
 
-    /// Initialize the Python subprocess
-    pub async fn start(&self) -> Result<(), String> {
+    /// Internal method to spawn the Python process
+    async fn spawn_process(&self) -> Result<(), String> {
+        if self.process.lock().await.is_some() {
+            return Ok(());
+        }
+
         let script_path = if let Some(ref work_dir) = self.config.working_dir {
             work_dir.join(&self.config.script_path)
         } else {
@@ -168,7 +172,13 @@ impl MlBridge {
         drop(stdout_lock);
 
         info!("ML Bridge Python subprocess started successfully");
+        Ok(())
+    }
 
+    /// Initialize the Python subprocess and verify heartbeat
+    pub async fn start(&self) -> Result<(), String> {
+        self.spawn_process().await?;
+        
         match self.send_request(MlRequest::Heartbeat).await {
             Ok(_) => {
                 info!("ML Bridge heartbeat verified");
@@ -192,9 +202,7 @@ impl MlBridge {
     }
 
     async fn _send_request_inner(&self, request: MlRequest) -> Result<MlResponse, String> {
-        if self.process.lock().await.is_none() {
-            self.start().await?;
-        }
+        self.spawn_process().await?;
 
         let json_req = serde_json::to_string(&request)
             .map_err(|e| format!("Serialization error: {}", e))?;
