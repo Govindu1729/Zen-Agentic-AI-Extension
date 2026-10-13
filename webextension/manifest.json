@@ -36,7 +36,7 @@
 
   "native_applications": {
     "zen_agentic_native": {
-      "path": "/path/to/zen-agentic-native",
+      "path": "/Users/srimaan/Projects/zen-extension/native-host/target/release/zen-agentic-native",
       "allowed_extensions": ["zen-agentic-ai@localhost"]
     }
   },
