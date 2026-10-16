@@ -773,12 +773,17 @@ impl MCPServer {
             .and_then(|v| v.as_i64())
             .unwrap_or(5000) as usize;
 
-        let text_content = dom_state.get("text_content")
+        // Page text may arrive directly in `arguments` (from the sidebar content
+        // script) or inside `dom_state` (from the DOM observer path). Prefer the
+        // explicit argument, since call_mcp_tool has no live DOM state.
+        let raw_text = args.get("text")
             .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .chars()
-            .take(max_length)
-            .collect::<String>();
+            .or_else(|| dom_state.get("text_content").and_then(|v| v.as_str()))
+            .unwrap_or("");
+
+        let text_content: String = raw_text.chars().take(max_length).collect();
+
+        let query = args.get("query").and_then(|v| v.as_str());
 
         let mut result_data = json!({
             "url": dom_state.get("url").unwrap_or(&Value::Null),
@@ -787,11 +792,15 @@ impl MCPServer {
             "content": text_content,
         });
 
-        if include_nlp {
+        if let Some(q) = query {
+            result_data["query"] = json!(q);
+        }
+
+        if include_nlp && !text_content.is_empty() {
             result_data["nlp_analysis"] = json!({
                 "sentiment": "neutral",
                 "entities": [],
-                "summary": "NLP analysis available via ML Bridge",
+                "summary": "NLP analysis available via the ml_* host methods",
                 "keywords": []
             });
         }

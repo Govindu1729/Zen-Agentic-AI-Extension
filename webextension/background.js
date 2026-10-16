@@ -13,6 +13,12 @@ let nativePort = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 
+// Guard against opening multiple ports when connect is requested repeatedly
+let connecting = false;
+
+// Last state pushed to the sidebar, so we only notify on real transitions
+let lastNotifiedState = null;
+
 // Message queue for when native host is not connected
 const messageQueue = [];
 
@@ -27,11 +33,18 @@ const NATIVE_TIMEOUT_MS = 15000;
  * Connect to the native messaging host
  */
 function connectToNativeHost() {
+    // Already have a live port, or a connect is in flight: do nothing. This
+    // prevents several concurrent ports (and the repeated "Connected"
+    // messages) when connect is triggered from more than one place.
+    if (nativePort || connecting) {
+        return;
+    }
+    connecting = true;
+
     try {
         console.log('[Zen Agentic] Connecting to native host...');
 
         nativePort = browser.runtime.connectNative('zen_agentic_native');
-
         nativePort.onMessage.addListener((response) => {
             console.log('[Zen Agentic] Received from native:', response);
 
@@ -55,6 +68,7 @@ function connectToNativeHost() {
             console.log('[Zen Agentic] Disconnected from native host');
             isConnected = false;
             nativePort = null;
+            connecting = false;
 
             // Fail any in-flight requests so callers do not hang
             for (const [id, pending] of pendingRequests.entries()) {
@@ -78,6 +92,7 @@ function connectToNativeHost() {
         });
 
         isConnected = true;
+        connecting = false;
         reconnectAttempts = 0;
         console.log('[Zen Agentic] Connected to native host');
 
@@ -87,10 +102,11 @@ function connectToNativeHost() {
             sendToNative(msg);
         }
 
-        // Notify sidebar of connection status
-        notifySidebar({ type: 'connection', status: 'connected' });
+        // Notify sidebar of connection status (only on transition)
+        notifyConnection('connected');
 
     } catch (error) {
+        connecting = false;
         console.error('[Zen Agentic] Failed to connect to native host:', error);
         isConnected = false;
         notifySidebar({
@@ -98,6 +114,15 @@ function connectToNativeHost() {
             message: `Connection failed: ${error.message}`
         });
     }
+}
+
+/**
+ * Notify the sidebar about connection state, but only when it changes.
+ */
+function notifyConnection(status) {
+    if (lastNotifiedState === status) return;
+    lastNotifiedState = status;
+    notifySidebar({ type: 'connection', status });
 }
 
 /**

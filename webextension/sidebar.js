@@ -17,10 +17,31 @@ let messageId = 0;
 function addMessage(content, type = 'system') {
     const div = document.createElement('div');
     div.className = `message ${type}`;
-    div.textContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+    // Never dump raw objects/arrays into the UI; summarise instead.
+    if (typeof content === 'string') {
+        div.textContent = content;
+    } else {
+        div.textContent = summarise(content);
+    }
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
     return div;
+}
+
+function summarise(value) {
+    if (Array.isArray(value)) {
+        return `[${value.length} item(s)]`;
+    }
+    if (value && typeof value === 'object') {
+        const parts = [];
+        for (const [k, v] of Object.entries(value)) {
+            if (Array.isArray(v)) parts.push(`${k}: ${v.length} item(s)`);
+            else if (v && typeof v === 'object') parts.push(`${k}: {…}`);
+            else parts.push(`${k}: ${v}`);
+        }
+        return parts.join('\n');
+    }
+    return String(value);
 }
 
 function setToolsEnabled(enabled) {
@@ -29,12 +50,17 @@ function setToolsEnabled(enabled) {
     });
 }
 
+// Only announce a state TRANSITION, never on every status message.
 function updateConnectionStatus(connected) {
+    const changed = connected !== isConnected;
     isConnected = connected;
     if (connectionStatus) connectionStatus.classList.toggle('connected', connected);
     if (statusText) statusText.textContent = connected ? 'Connected' : 'Disconnected';
     setToolsEnabled(connected);
-    if (connected) addMessage('Connected to native host.', 'system');
+    if (changed) {
+        addMessage(connected ? 'Connected to native host.' : 'Disconnected from native host.',
+                   connected ? 'system' : 'error');
+    }
 }
 
 // Messaging helpers -------------------------------------------------------
@@ -51,9 +77,42 @@ async function sendToNative(method, params = {}) {
     return res.result;
 }
 
-// Route native calls through the MCP tool interface where appropriate
 async function callMcpTool(toolName, args = {}) {
     return sendToNative('call_mcp_tool', { tool_name: toolName, arguments: args });
+}
+
+// MCP responses are { content: [{ type:'text', text: '<json>' }], error }.
+// Unwrap to the inner text so the UI never renders raw object trees.
+function mcpText(res) {
+    if (!res) return '';
+    if (typeof res === 'string') return res;
+    if (Array.isArray(res.content)) {
+        return res.content
+            .map((c) => (c && typeof c.text === 'string' ? c.text : ''))
+            .filter(Boolean)
+            .join('\n');
+    }
+    return summarise(res);
+}
+
+// Format a page-content analysis compactly instead of dumping the full text.
+function formatAnalysis(res) {
+    const raw = mcpText(res);
+    let parsed = null;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (_) {
+        return raw || 'Analysis complete.';
+    }
+    if (parsed && typeof parsed === 'object') {
+        const lines = [];
+        if (parsed.title) lines.push(`Title: ${parsed.title}`);
+        if (typeof parsed.content_length === 'number') lines.push(`Characters analysed: ${parsed.content_length}`);
+        if (parsed.query) lines.push(`Query: ${parsed.query}`);
+        if (parsed.content) lines.push(`Preview: ${String(parsed.content).slice(0, 240)}…`);
+        return lines.length ? lines.join('\n') : raw;
+    }
+    return raw;
 }
 
 // Connection lifecycle ----------------------------------------------------
@@ -99,7 +158,16 @@ btnSnapshot.addEventListener('click', async () => {
     addMessage('Taking page snapshot...', 'system');
     try {
         const snap = await sendToBackground('get_dom_snapshot');
-        addMessage(`URL: ${snap.url}\nTitle: ${snap.title}\nElements: ${snap.elementCount}\nInteractive: ${snap.interactiveElements}`, 'assistant');
+        if (snap && snap.error) throw new Error(snap.error);
+        const interactive = Array.isArray(snap.interactiveElements)
+            ? snap.interactiveElements.length
+            : (snap.interactiveElements || 0);
+        addMessage([
+            `URL: ${snap.url}`,
+            `Title: ${snap.title}`,
+            `Elements: ${snap.elementCount}`,
+            `Interactive: ${interactive}`,
+        ].join('\n'), 'assistant');
     } catch (err) {
         addMessage(`Snapshot failed: ${err.message}`, 'error');
     }
@@ -113,23 +181,34 @@ btnNetwork.addEventListener('click', async () => {
             addMessage('No recent network requests found.', 'assistant');
             return;
         }
-        const lines = reqs.slice(-5).map((r) => `${r.method || '?'} ${r.status || r.error || '?'} ${String(r.url).slice(0, 60)}`);
+        const lines = reqs.slice(-5).map((r) =>
+            `${r.method || '?'} ${r.status || r.error || '?'} ${String(r.url).slice(0, 60)}`);
         addMessage(`Found ${reqs.length} requests:\n${lines.join('\n')}`, 'assistant');
     } catch (err) {
         addMessage(`Network query failed: ${err.message}`, 'error');
     }
 });
 
+async function getActivePageText() {
+    const content = await sendToBackground('get_page_text');
+    if (content && content.error) throw new Error(content.error);
+    return (content && content.text) || '';
+}
+
 btnAnalyze.addEventListener('click', async () => {
     addMessage('Analyzing page content...', 'system');
     try {
-        const content = await sendToBackground('get_page_text');
-        if (content && content.error) throw new Error(content.error);
-        const text = (content && content.text) || '';
-        if (!text) throw new Error('No page text available');
-
-        const res = await callMcpTool('extract_page_content', { include_nlp: true, max_length: 4000, text });
-        addMessage(res || 'Analysis complete.', 'assistant');
+        const text = await getActivePageText();
+        if (!text) {
+            addMessage('No page text available on this tab (browser-internal pages are not accessible).', 'error');
+            return;
+        }
+        const res = await callMcpTool('extract_page_content', {
+            include_nlp: true,
+            max_length: 4000,
+            text,
+        });
+        addMessage(formatAnalysis(res) || 'Analysis complete.', 'assistant');
     } catch (err) {
         addMessage(`Analysis failed: ${err.message}`, 'error');
     }
@@ -140,11 +219,15 @@ btnScreenCapture.addEventListener('click', async () => {
     try {
         const perm = await sendToNative('check_screen_capture_permission');
         if (perm && perm.has_permission === false) {
-            addMessage('Screen capture permission not granted. Grant it in System Settings, then retry.', 'error');
+            addMessage('Screen Recording permission not granted.\nSystem Settings → Privacy & Security → Screen & System Audio Recording, enable zen-agentic-native, then restart Zen.', 'error');
             return;
         }
         const frame = await sendToNative('capture_frame_jpeg');
-        addMessage(frame ? 'Screen capture received.' : 'No frame captured.', frame ? 'assistant' : 'error');
+        if (frame && (frame.data || frame.size)) {
+            addMessage(`Screen capture received (${frame.size || 0} bytes).`, 'assistant');
+        } else {
+            addMessage('No frame captured. Check Screen Recording permission.', 'error');
+        }
     } catch (err) {
         addMessage(`Screen capture failed: ${err.message}`, 'error');
     }
@@ -161,13 +244,19 @@ async function handleSubmit() {
     const loading = addMessage('Processing...', 'loading');
 
     try {
-        const res = await callMcpTool('extract_page_content', {
-            include_nlp: true,
-            max_length: 4000,
-            query: text,
-        });
+        let pageText = '';
+        try {
+            pageText = await getActivePageText();
+        } catch (_) {
+            // Internal pages have no content script; answer with query only.
+        }
+
+        const args = { include_nlp: true, max_length: 4000, query: text };
+        if (pageText) args.text = pageText;
+
+        const res = await callMcpTool('extract_page_content', args);
         loading.remove();
-        addMessage(res || 'Analysis complete.', 'assistant');
+        addMessage(formatAnalysis(res) || 'Done.', 'assistant');
     } catch (err) {
         loading.remove();
         addMessage(`Error: ${err.message}`, 'error');

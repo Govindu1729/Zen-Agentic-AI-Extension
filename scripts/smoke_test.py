@@ -274,6 +274,48 @@ def check_manifest() -> None:
            f"id={ext_id} allowed={allowed}")
 
 
+def check_mcp_call(binary: Path) -> None:
+    """Exercise call_mcp_tool with page text, the path the sidebar uses."""
+    if not binary.exists():
+        return
+    try:
+        frames = run_native(binary, [
+            {"id": "m1", "method": "call_mcp_tool", "params": {
+                "tool_name": "extract_page_content",
+                "arguments": {
+                    "include_nlp": True,
+                    "max_length": 4000,
+                    "text": "A great page about browsers and extensions.",
+                    "query": "what is this",
+                },
+            }},
+        ])
+    except Exception as exc:  # noqa: BLE001
+        record("MCP call_mcp_tool runs", False, repr(exc))
+        return
+
+    frame = next((f for f in frames if f.get("id") == "m1"), {})
+    if frame.get("error"):
+        record("MCP call_mcp_tool runs", False, str(frame["error"])[:120])
+        return
+
+    result = frame.get("result") or {}
+    content = result.get("content")
+    ok = isinstance(content, list) and content and isinstance(content[0].get("text"), str)
+    record("MCP call_mcp_tool runs", ok)
+
+    if ok:
+        try:
+            parsed = json.loads(content[0]["text"])
+            has_text = parsed.get("content_length", 0) > 0
+            record("MCP extract_page_content sees page text", has_text,
+                   f"content_length={parsed.get('content_length')}")
+            record("MCP extract_page_content echoes query",
+                   parsed.get("query") == "what is this", str(parsed.get("query")))
+        except json.JSONDecodeError as exc:
+            record("MCP extract_page_content payload is JSON", False, str(exc))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default=str(DEFAULT_BINARY))
@@ -282,6 +324,8 @@ def main() -> int:
     print("=== Zen Agentic Extension — end-to-end smoke test ===")
     print("\n[native host]")
     check_native(Path(args.binary))
+    print("\n[MCP tool calls]")
+    check_mcp_call(Path(args.binary))
     print("\n[ML backend]")
     check_ml()
     print("\n[extension JS]")

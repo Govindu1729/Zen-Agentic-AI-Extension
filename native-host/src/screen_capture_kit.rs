@@ -146,7 +146,7 @@ impl ScreenCaptureManager {
     }
 
     /// Find windows for an application
-    pub async fn find_application_windows(&self, app_name: &str) -> Vec<CaptureSource> {
+    pub async fn find_application_windows(&self, _app_name: &str) -> Vec<CaptureSource> {
         // For now, return empty list
         vec![]
     }
@@ -156,7 +156,7 @@ impl ScreenCaptureManager {
     }
 
     /// Configure stream
-    pub async fn configure_stream(&mut self, window_id: u32, width: u32, height: u32) -> Result<()> {
+    pub async fn configure_stream(&mut self, window_id: u32, _width: u32, _height: u32) -> Result<()> {
         self.config = Some(CaptureConfig {
             window_id: Some(window_id),
             fps: 60,
@@ -171,14 +171,22 @@ impl ScreenCaptureManager {
 
     /// Capture a single frame using CGWindowListCreateImage
     pub async fn capture_frame(&mut self) -> Result<Option<CapturedFrame>> {
-        if !self.is_capturing {
-            return Ok(None);
-        }
-
-        let window_id = self.config
+        // If no stream has been configured, fall back to capturing the whole
+        // screen. Requesting an unspecified window (id 0) together with the
+        // INCLUDING_WINDOW option returns NULL, which is what previously made
+        // the Screen button fail with "No frame captured".
+        let window_id = self
+            .config
             .as_ref()
             .and_then(|c| c.window_id)
             .unwrap_or(0);
+
+        let whole_screen = window_id == 0 || !self.is_capturing;
+        let option = if whole_screen {
+            CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY
+        } else {
+            CG_WINDOW_LIST_OPTION_INCLUDING_WINDOW
+        };
 
         let quality = self.config.as_ref().map(|c| c.quality).unwrap_or(85);
 
@@ -199,14 +207,14 @@ impl ScreenCaptureManager {
         let image_ref = unsafe {
             CGWindowListCreateImage(
                 rect,
-                CG_WINDOW_LIST_OPTION_INCLUDING_WINDOW,
+                option,
                 window_id,
                 CG_WINDOW_IMAGE_DEFAULT,
             )
         };
 
         if image_ref.is_null() {
-            debug!(window_id, "CGWindowListCreateImage returned NULL");
+            debug!(window_id, whole_screen, "CGWindowListCreateImage returned NULL");
             return Ok(None);
         }
 
