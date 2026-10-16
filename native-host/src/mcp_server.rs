@@ -1208,8 +1208,8 @@ mod tests {
     #[test]
     fn test_server_initialization() {
         let server = MCPServer::new();
-        assert_eq!(server.list_tools().len(), 6);
-        assert_eq!(server.list_resources().len(), 1);
+        assert_eq!(server.list_tools().len(), 19);
+        assert_eq!(server.list_resources().len(), 3);
     }
 
     #[test]
@@ -1223,6 +1223,23 @@ mod tests {
         assert!(tool_names.contains(&"list_network_requests"));
         assert!(tool_names.contains(&"get_screen_capture"));
         assert!(tool_names.contains(&"extract_page_content"));
+        for name in [
+            "search_page_content",
+            "extract_links",
+            "analyze_page_structure",
+            "form_filling",
+            "get_tab_info",
+            "extract_text_content",
+            "find_element",
+            "scroll_page",
+            "scroll_to_element",
+            "get_computed_styles",
+            "execute_rag_query",
+            "store_document",
+            "get_page_analysis",
+        ] {
+            assert!(tool_names.contains(&name), "missing tool: {name}");
+        }
     }
 
     #[tokio::test]

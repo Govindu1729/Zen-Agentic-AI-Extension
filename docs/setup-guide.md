@@ -146,7 +146,7 @@ Expected output:
 
 1. Check browser console for errors (Ctrl+Shift+J / Cmd+Opt+J)
 2. Verify manifest.json syntax
-3. Ensure all referenced files exist (sidebar.html, background.js, etc.)
+3. Ensure all referenced files exist (sidebar.html, background.js, etc. under `webextension/`)
 
 ## Next Steps (Future Phases)
 

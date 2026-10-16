@@ -13,6 +13,54 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use log::{info, warn, error};
 
+impl MlBridgeConfig {
+    /// Resolve the ML backend script path robustly.
+    ///
+    /// The browser spawns the native host with an unpredictable working
+    /// directory, so a bare relative path is fragile. Try, in order:
+    ///   1. an explicit working_dir
+    ///   2. ZEN_AGENTIC_ML_SCRIPT env override
+    ///   3. the executable's directory walking up to find ml-backend/
+    ///   4. the process working directory
+    pub fn resolve_script_path(&self) -> PathBuf {
+        if let Some(ref work_dir) = self.working_dir {
+            let candidate = work_dir.join(&self.config_script());
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+
+        if let Ok(override_path) = std::env::var("ZEN_AGENTIC_ML_SCRIPT") {
+            let candidate = PathBuf::from(override_path);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+
+        let relative = self.config_script();
+
+        // Walk up from the executable location looking for ml-backend/.
+        if let Ok(exe) = std::env::current_exe() {
+            let mut dir = exe.parent().map(PathBuf::from);
+            while let Some(current) = dir {
+                let candidate = current.join(&relative);
+                if candidate.exists() {
+                    return candidate;
+                }
+                dir = current.parent().map(PathBuf::from);
+            }
+        }
+
+        // Fall back to the current working directory.
+        relative
+    }
+
+    fn config_script(&self) -> PathBuf {
+        // script_path is stored relative to the project root (e.g. ml-backend/nlp_processor.py)
+        PathBuf::from(&self.script_path)
+    }
+}
+
 /// Configuration for the ML Bridge
 #[derive(Debug, Clone)]
 pub struct MlBridgeConfig {
@@ -35,7 +83,7 @@ impl Default for MlBridgeConfig {
     }
 }
 
-/// StoreDocument - fixed colon
+/// StoreDocument payload for RAG storage
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StoreDocument {
     pub id: String,
@@ -125,11 +173,7 @@ impl MlBridge {
             return Ok(());
         }
 
-        let script_path = if let Some(ref work_dir) = self.config.working_dir {
-            work_dir.join(&self.config.script_path)
-        } else {
-            PathBuf::from(&self.config.script_path)
-        };
+        let script_path = self.config.resolve_script_path();
 
         let mut cmd = Command::new(&self.config.python_path);
         cmd.arg(&script_path)

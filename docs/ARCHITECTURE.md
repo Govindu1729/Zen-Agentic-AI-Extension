@@ -71,11 +71,15 @@ The Zen Agentic Extension implements a modular, microservice-inspired architectu
 
 **Technology**: Firefox WebExtensions API (Manifest V2)
 
-**Key Files**:
+**Key Files** (all under `webextension/`):
 - `manifest.json` - Extension configuration
 - `background.js` - Persistent background script
 - `sidebar.html` / `sidebar.js` - User interface
-- `src/` - Source files (copied to root for simplicity)
+- `content.js` - Per-page content/DOM extraction
+- `icons/` - Toolbar and sidebar icons
+
+The extension root is `webextension/`; the repository root holds the native host,
+ML backend, docs and scripts, and is not itself a loadable extension directory.
 
 **Responsibilities**:
 - Render sidebar UI in Zen Browser's vertical layout

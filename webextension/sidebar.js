@@ -1,6 +1,6 @@
 // Sidebar UI script for Zen Agentic AI Extension
+'use strict';
 
-const connectBtn = document.getElementById('connectBtn');
 const connectionStatus = document.getElementById('connectionStatus');
 const statusText = document.getElementById('statusText');
 const chatMessages = document.getElementById('chatMessages');
@@ -20,34 +20,47 @@ function addMessage(content, type = 'system') {
     div.textContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    return div;
+}
+
+function setToolsEnabled(enabled) {
+    [btnSnapshot, btnScreenCapture, btnAnalyze, btnNetwork, chatInput, sendBtn].forEach((el) => {
+        if (el) el.disabled = !enabled;
+    });
 }
 
 function updateConnectionStatus(connected) {
     isConnected = connected;
-    connectionStatus.classList.toggle('connected', connected);
-    statusText.textContent = connected ? 'Connected' : 'Disconnected';
-    
-    [btnSnapshot, btnScreenCapture, btnAnalyze, btnNetwork, chatInput, sendBtn].forEach(btn => {
-        btn.disabled = !connected;
-    });
-    
-    if (connected) {
-        addMessage('Connected to native host!', 'system');
-    }
+    if (connectionStatus) connectionStatus.classList.toggle('connected', connected);
+    if (statusText) statusText.textContent = connected ? 'Connected' : 'Disconnected';
+    setToolsEnabled(connected);
+    if (connected) addMessage('Connected to native host.', 'system');
 }
 
-sendToBackground(action, data = {}) {
+// Messaging helpers -------------------------------------------------------
+
+function sendToBackground(action, data = {}) {
     return browser.runtime.sendMessage({ action, ...data });
 }
 
-sendToNative(method, params = {}) {
-    return sendToBackground('send_to_native', { data: { id: messageId++, method, params } });
+async function sendToNative(method, params = {}) {
+    const data = { id: `req_${Date.now()}_${messageId++}`, method, params };
+    const res = await sendToBackground('send_to_native', { data });
+    if (!res) throw new Error('No response from background script');
+    if (!res.success) throw new Error(res.error || 'Native call failed');
+    return res.result;
 }
 
-// Connection
-browser.runtime.onMessage.addListener(msg => {
-    if (msg.from !== 'background') return;
-    
+// Route native calls through the MCP tool interface where appropriate
+async function callMcpTool(toolName, args = {}) {
+    return sendToNative('call_mcp_tool', { tool_name: toolName, arguments: args });
+}
+
+// Connection lifecycle ----------------------------------------------------
+
+browser.runtime.onMessage.addListener((msg) => {
+    if (!msg || msg.from !== 'background') return;
+
     switch (msg.type) {
         case 'connection':
             updateConnectionStatus(msg.status === 'connected');
@@ -56,79 +69,120 @@ browser.runtime.onMessage.addListener(msg => {
             addMessage(`Error: ${msg.message}`, 'error');
             break;
         case 'screen_capture_frame':
-            addMessage('Screen capture received', 'assistant');
+            addMessage('Screen capture frame received.', 'assistant');
+            break;
+        case 'mcp_tool_result':
+            addMessage(msg.result, 'assistant');
+            break;
+        default:
             break;
     }
 });
 
-// Send initial ping
-sendToBackground('ping').then(res => {
-    if (res.pong) {
-        sendToBackground('connect_native');
+async function initConnection() {
+    try {
+        const res = await sendToBackground('ping');
+        updateConnectionStatus(Boolean(res && res.connected));
+        if (!res || !res.connected) {
+            addMessage('Connecting to native host...', 'system');
+            await sendToBackground('connect_native');
+        }
+    } catch (err) {
+        addMessage(`Connection error: ${err.message}`, 'error');
+        updateConnectionStatus(false);
     }
-}).catch(() => {
-    addMessage('Connecting to native host...', 'system');
-    sendToBackground('connect_native');
-});
+}
 
-// Tool handlers
-btnSnapshot.onclick = async () => {
-    addMessage('Taking snapshot...', 'system');
+// Tool handlers -----------------------------------------------------------
+
+btnSnapshot.addEventListener('click', async () => {
+    addMessage('Taking page snapshot...', 'system');
     try {
         const snap = await sendToBackground('get_dom_snapshot');
-        addMessage(`URL: ${snap.url}\nTitle: ${snap.title}\nElements: ${snap.elementCount}`, 'assistant');
-    } catch (e) {
-        addMessage(`Error: ${e.message}`, 'error');
+        addMessage(`URL: ${snap.url}\nTitle: ${snap.title}\nElements: ${snap.elementCount}\nInteractive: ${snap.interactiveElements}`, 'assistant');
+    } catch (err) {
+        addMessage(`Snapshot failed: ${err.message}`, 'error');
     }
-};
+});
 
-btnNetwork.onclick = async () => {
+btnNetwork.addEventListener('click', async () => {
     addMessage('Fetching network requests...', 'system');
     try {
         const reqs = await sendToBackground('get_network_requests', { limit: 20 });
-        addMessage(`Found ${reqs.length} recent requests`, 'assistant');
-    } catch (e) {
-        addMessage(`Error: ${e.message}`, 'error');
+        if (!reqs || !reqs.length) {
+            addMessage('No recent network requests found.', 'assistant');
+            return;
+        }
+        const lines = reqs.slice(-5).map((r) => `${r.method || '?'} ${r.status || r.error || '?'} ${String(r.url).slice(0, 60)}`);
+        addMessage(`Found ${reqs.length} requests:\n${lines.join('\n')}`, 'assistant');
+    } catch (err) {
+        addMessage(`Network query failed: ${err.message}`, 'error');
     }
-};
+});
 
-btnAnalyze.onclick = async () => {
-    addMessage('Analyzing page...', 'system');
+btnAnalyze.addEventListener('click', async () => {
+    addMessage('Analyzing page content...', 'system');
     try {
-        await sendToNative('analyze_page');
-        addMessage('Analysis requested. Check sidebar.', 'assistant');
-    } catch (e) {
-        addMessage(`Error: ${e.message}`, 'error');
-    }
-};
+        const content = await sendToBackground('get_page_text');
+        if (content && content.error) throw new Error(content.error);
+        const text = (content && content.text) || '';
+        if (!text) throw new Error('No page text available');
 
-btnScreenCapture.onclick = async () => {
+        const res = await callMcpTool('extract_page_content', { include_nlp: true, max_length: 4000, text });
+        addMessage(res || 'Analysis complete.', 'assistant');
+    } catch (err) {
+        addMessage(`Analysis failed: ${err.message}`, 'error');
+    }
+});
+
+btnScreenCapture.addEventListener('click', async () => {
     addMessage('Requesting screen capture...', 'system');
     try {
-        await sendToNative('capture_frame');
-        addMessage('Capture initiated', 'assistant');
-    } catch (e) {
-        addMessage(`Error: ${e.message}`, 'error');
+        const perm = await sendToNative('check_screen_capture_permission');
+        if (perm && perm.has_permission === false) {
+            addMessage('Screen capture permission not granted. Grant it in System Settings, then retry.', 'error');
+            return;
+        }
+        const frame = await sendToNative('capture_frame_jpeg');
+        addMessage(frame ? 'Screen capture received.' : 'No frame captured.', frame ? 'assistant' : 'error');
+    } catch (err) {
+        addMessage(`Screen capture failed: ${err.message}`, 'error');
     }
-};
+});
 
-// Chat
-sendBtn.onclick = async () => {
+// Chat --------------------------------------------------------------------
+
+async function handleSubmit() {
     const text = chatInput.value.trim();
     if (!text) return;
-    
+
     addMessage(text, 'user');
     chatInput.value = '';
-    addMessage('Processing...', 'loading');
-    
-    try {
-        await sendToNative('analyze_page', { query: text });
-        addMessage('Analysis in progress...', 'assistant');
-    } catch (e) {
-        addMessage(`Error: ${e.message}`, 'error');
-    }
-};
+    const loading = addMessage('Processing...', 'loading');
 
-chatInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') sendBtn.onclick();
+    try {
+        const res = await callMcpTool('extract_page_content', {
+            include_nlp: true,
+            max_length: 4000,
+            query: text,
+        });
+        loading.remove();
+        addMessage(res || 'Analysis complete.', 'assistant');
+    } catch (err) {
+        loading.remove();
+        addMessage(`Error: ${err.message}`, 'error');
+    }
+}
+
+sendBtn.addEventListener('click', handleSubmit);
+chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSubmit();
+    }
 });
+
+// Boot --------------------------------------------------------------------
+
+setToolsEnabled(false);
+initConnection();

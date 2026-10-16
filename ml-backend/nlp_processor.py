@@ -1,24 +1,63 @@
 """
-NLP Processor for Zen Agentic Extension
+NLP Processor / ML backend for the Zen Agentic Extension.
 
-Provides local text processing capabilities:
-- Sentiment analysis
-- Entity extraction
-- Text summarization
-- Keyword extraction
+Speaks two wire protocols on stdin/stdout, one JSON object per line:
 
-Uses free, open-source models compatible with local execution.
+1. Native-host mode (used by native-host/src/ml_bridge.rs):
+       request : {"action": "analyze_sentiment", "text": "..."}
+       response: {"status": "success", "data": <payload>, "message": null}
+   The Rust side deserialises into MlResponse { status, data, message }.
+
+2. JSON-RPC-ish mode (documented in docs/setup-guide.md):
+       request : {"id": "x", "method": "process_text", "params": {...}}
+       response: {"id": "x", "result": {...}}  or  {"id": "x", "error": {...}}
+
+Payload shapes are chosen to match the Rust types exactly:
+  * sentiment      -> {"positive": f, "negative": f, "neutral": f}
+  * entities       -> [ {...}, ... ]
+  * summarize      -> {"summary": "..."}
+  * keywords       -> ["word", ...]                 (Rust: Vec<String>)
+  * embedding      -> [f32, ...]                    (Rust: Vec<f32>)
+  * query_rag      -> {"results": [...], "query": "..."}
+  * store_document -> {"stored_count": n}
 """
 
+import hashlib
 import json
+import math
+import re
 import sys
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional
+
+EMBEDDING_DIM = 384
+
+POSITIVE_WORDS = {
+    "good", "great", "excellent", "amazing", "wonderful", "fantastic",
+    "awesome", "positive", "happy", "love", "best", "perfect", "beautiful",
+    "helpful", "success", "win", "improved", "fast", "reliable",
+}
+NEGATIVE_WORDS = {
+    "bad", "terrible", "awful", "horrible", "worst", "negative", "sad",
+    "hate", "poor", "fail", "error", "problem", "issue", "wrong", "broken",
+    "slow", "crash", "bug", "useless", "confusing",
+}
+STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "being", "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "must", "shall", "can", "need",
+    "it", "its", "this", "that", "these", "those", "i", "you", "he", "she",
+    "we", "they", "what", "which", "who", "whom", "whose", "where", "when",
+    "why", "how", "all", "each", "every", "both", "few", "more", "most",
+    "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so",
+}
 
 
 @dataclass
 class NLPResult:
-    """Container for NLP analysis results"""
+    """Container for NLP analysis results (JSON-RPC mode)."""
+
     text: str
     language: str = "en"
     sentiment: Optional[Dict[str, float]] = None
@@ -28,359 +67,232 @@ class NLPResult:
 
 
 class NLPProcessor:
-    """
-    Local NLP processor using free libraries.
-
-    For Phase 1-2: Basic rule-based/heuristic implementations
-    For Phase 3-4: Integration with spaCy, NLTK, or transformer models
-    """
+    """Local, dependency-free NLP heuristics (Phase 1)."""
 
     def __init__(self, model_path: Optional[str] = None):
         self.model_path = model_path
         self.initialized = False
 
     def initialize(self) -> bool:
-        """Initialize NLP models and resources"""
-        try:
-            # Phase 1: Basic initialization without heavy dependencies
-            # Phase 4: Load spaCy models, transformers, etc.
-            self.initialized = True
-            return True
-        except Exception as e:
-            print(f"Initialization error: {e}", file=sys.stderr)
-            return False
+        self.initialized = True
+        return True
+
+    # -- individual analyses ------------------------------------------------
 
     def analyze_sentiment(self, text: str) -> Dict[str, float]:
-        """
-        Analyze sentiment of text.
-
-        Phase 1: Simple keyword-based heuristic
-        Phase 4: Use pre-trained transformer (DistilBERT, etc.)
-        """
-        # Simple heuristic implementation for Phase 1
-        positive_words = {
-            'good', 'great', 'excellent', 'amazing', 'wonderful',
-            'fantastic', 'awesome', 'positive', 'happy', 'love',
-            'best', 'perfect', 'beautiful', 'helpful', 'success'
-        }
-        negative_words = {
-            'bad', 'terrible', 'awful', 'horrible', 'worst',
-            'negative', 'sad', 'hate', 'poor', 'fail',
-            'error', 'problem', 'issue', 'wrong', 'broken'
-        }
-
-        words = text.lower().split()
-        pos_count = sum(1 for w in words if w in positive_words)
-        neg_count = sum(1 for w in words if w in negative_words)
-
-        total = pos_count + neg_count
+        words = re.findall(r"[a-z']+", text.lower())
+        pos = sum(1 for w in words if w in POSITIVE_WORDS)
+        neg = sum(1 for w in words if w in NEGATIVE_WORDS)
+        total = pos + neg
         if total == 0:
-            return {'positive': 0.5, 'negative': 0.5, 'neutral': 1.0}
-
-        positive = pos_count / total
-        negative = neg_count / total
-        neutral = 1.0 - (positive + negative) / 2
-
+            return {"positive": 0.5, "negative": 0.5, "neutral": 1.0}
+        positive = pos / total
+        negative = neg / total
+        neutral = max(0.0, 1.0 - abs(positive - negative))
         return {
-            'positive': max(0, min(1, positive)),
-            'negative': max(0, min(1, negative)),
-            'neutral': max(0, min(1, neutral))
+            "positive": round(max(0.0, min(1.0, positive)), 4),
+            "negative": round(max(0.0, min(1.0, negative)), 4),
+            "neutral": round(max(0.0, min(1.0, neutral)), 4),
         }
 
     def extract_entities(self, text: str) -> List[Dict[str, Any]]:
-        """
-        Extract named entities from text.
-
-        Phase 1: Simple regex-based extraction
-        Phase 4: Use spaCy NER model
-        """
-        import re
-
-        entities = []
-
-        # Email pattern
-        emails = re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', text)
-        for email in emails:
-            entities.append({'text': email, 'type': 'EMAIL'})
-
-        # URL pattern
-        urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', text)
-        for url in urls:
-            entities.append({'text': url, 'type': 'URL'})
-
-        # Money pattern
-        money = re.findall(r'\$[\d,]+(?:\.\d{2})?', text)
-        for amount in money:
-            entities.append({'text': amount, 'type': 'MONEY'})
-
-        # Date pattern (simple)
-        dates = re.findall(r'\b\d{1,2}/\d{1,2}/\d{2,4}\b', text)
-        for date in dates:
-            entities.append({'text': date, 'type': 'DATE'})
-
+        entities: List[Dict[str, Any]] = []
+        patterns = [
+            ("EMAIL", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+            ("URL", r"https?://[^\s<>\"{}|\\^`\[\]]+"),
+            ("MONEY", r"\$\s?\d[\d,]*(?:\.\d{2})?"),
+            ("DATE", r"\b\d{1,2}/\d{1,2}/\d{2,4}\b"),
+            ("ISO_DATE", r"\b\d{4}-\d{2}-\d{2}\b"),
+            ("PERCENT", r"\b\d+(?:\.\d+)?\s?%"),
+        ]
+        for label, pattern in patterns:
+            for match in re.findall(pattern, text):
+                entities.append({"text": match, "type": label})
         return entities
 
     def summarize(self, text: str, max_sentences: int = 3) -> str:
-        """
-        Generate a simple summary.
-
-        Phase 1: Extractive summarization (first N sentences)
-        Phase 4: Use BERT-based extractive or abstractive summarization
-        """
-        # Split into sentences (simple approach)
-        sentences = [s.strip() for s in text.replace('!', '.').replace('?', '.').split('.') if s.strip()]
-
+        if max_sentences < 1:
+            max_sentences = 1
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
         if len(sentences) <= max_sentences:
-            return text
-
-        # Return first N sentences as summary
-        return '. '.join(sentences[:max_sentences]) + '.'
+            return text.strip()
+        return " ".join(sentences[:max_sentences])
 
     def extract_keywords(self, text: str, top_k: int = 5) -> List[str]:
-        """
-        Extract top keywords from text.
+        freq: Dict[str, int] = {}
+        for word in re.findall(r"[a-z0-9']+", text.lower()):
+            if len(word) > 2 and word not in STOPWORDS:
+                freq[word] = freq.get(word, 0) + 1
+        ranked = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))
+        return [w for w, _ in ranked[: max(0, top_k)]]
 
-        Phase 1: Simple word frequency (stopwords removed)
-        Phase 4: Use TF-IDF or KeyBERT
-        """
-        # Simple stopwords list
-        stopwords = {
-            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-            'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
-            'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
-            'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need',
-            'it', 'its', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she',
-            'we', 'they', 'what', 'which', 'who', 'whom', 'whose', 'where', 'when',
-            'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most',
-            'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so'
-        }
-
-        # Count word frequencies
-        word_freq = {}
-        words = text.lower().split()
-
-        for word in words:
-            # Remove punctuation
-            clean_word = ''.join(c for c in word if c.isalnum())
-            if clean_word and clean_word not in stopwords and len(clean_word) > 2:
-                word_freq[clean_word] = word_freq.get(clean_word, 0) + 1
-
-        # Sort by frequency and return top K
-        sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)
-        return [word for word, _ in sorted_words[:top_k]]
+    def generate_embedding(self, text: str, dim: int = EMBEDDING_DIM) -> List[float]:
+        """Deterministic hashed bag-of-words embedding (no external model)."""
+        vec = [0.0] * dim
+        for token in re.findall(r"[a-z0-9']+", text.lower()):
+            digest = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16)
+            vec[digest % dim] += 1.0
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        return [round(v / norm, 6) for v in vec]
 
     def process(self, text: str, analysis_types: List[str], language: str = "en") -> NLPResult:
-        """
-        Process text with requested analysis types.
-
-        Args:
-            text: Input text to analyze
-            analysis_types: List of analyses to perform (sentiment, entities, summary, keywords)
-            language: Language code (default: en)
-
-        Returns:
-            NLPResult with requested analyses
-        """
         result = NLPResult(text=text, language=language)
-
-        if 'sentiment' in analysis_types:
+        if "sentiment" in analysis_types:
             result.sentiment = self.analyze_sentiment(text)
-
-        if 'entities' in analysis_types:
+        if "entities" in analysis_types:
             result.entities = self.extract_entities(text)
-
-        if 'summary' in analysis_types:
+        if "summary" in analysis_types:
             result.summary = self.summarize(text)
-
-        if 'keywords' in analysis_types:
+        if "keywords" in analysis_types:
             result.keywords = self.extract_keywords(text)
-
         return result
 
 
-def main():
-    """
-    Main entry point for subprocess communication.
+PROCESSOR = NLPProcessor()
 
-    Expects JSON-RPC-like messages on stdin, writes responses to stdout.
-    """
-    processor = NLPProcessor()
-    processor.initialize()
 
-    while True:
+def _ok(data: Any, request_id: Any = None) -> Dict[str, Any]:
+    return {"id": request_id, "status": "success", "data": data, "message": None}
+
+
+def _err(message: str, request_id: Any = None) -> Dict[str, Any]:
+    return {"id": request_id, "status": "error", "data": None, "message": message}
+
+
+def handle_native_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Native-host protocol: map Rust MlRequest actions to payloads."""
+    text = params.get("text", "") or ""
+
+    if action == "heartbeat":
+        return _ok({"status": "alive"})
+
+    if action == "analyze_sentiment":
+        return _ok(PROCESSOR.analyze_sentiment(text))
+
+    if action == "extract_entities":
+        return _ok(PROCESSOR.extract_entities(text))
+
+    if action == "summarize":
+        max_length = params.get("max_length")
+        n = max_length if isinstance(max_length, int) and max_length > 0 else 3
+        return _ok({"summary": PROCESSOR.summarize(text, n)})
+
+    if action == "extract_keywords":
+        top_k = params.get("top_k")
+        k = top_k if isinstance(top_k, int) and top_k > 0 else 5
+        return _ok(PROCESSOR.extract_keywords(text, k))
+
+    if action == "generate_embedding":
+        return _ok(PROCESSOR.generate_embedding(text))
+
+    if action == "query_rag":
+        query = params.get("query", "") or ""
+        top_k = params.get("top_k")
+        k = top_k if isinstance(top_k, int) and top_k > 0 else 5
+        return _ok({"query": query, "results": [], "top_k": k})
+
+    if action == "store_document":
+        meta = params.get("meta")
+        return _ok({"stored_count": 1 if text else 0, "meta": meta})
+
+    if action == "generate_response":
+        prompt = params.get("prompt", "") or ""
+        answer = PROCESSOR.summarize(prompt, 2) if prompt else ""
+        return _ok({"response": answer})
+
+    return _err(f"unknown action: {action}")
+
+
+def handle_jsonrpc(method: str, params: Dict[str, Any], request_id: Any) -> Dict[str, Any]:
+    if method in ("ping", "initialize"):
+        return {"id": request_id, "result": {"pong": True, "initialized": PROCESSOR.initialized}}
+
+    if method == "process_text":
+        text = params.get("text", "")
+        types = params.get("analysis_types", ["summary"])
+        language = params.get("language", "en")
+        return {"id": request_id, "result": asdict(PROCESSOR.process(text, types, language))}
+
+    if method in ("sentiment", "analyze_sentiment"):
+        return {"id": request_id, "result": PROCESSOR.analyze_sentiment(params.get("text", ""))}
+
+    if method in ("entities", "extract_entities"):
+        return {"id": request_id, "result": PROCESSOR.extract_entities(params.get("text", ""))}
+
+    if method in ("summary", "summarize"):
+        return {"id": request_id, "result": {"summary": PROCESSOR.summarize(params.get("text", ""))}}
+
+    if method in ("keywords", "extract_keywords"):
+        return {"id": request_id, "result": PROCESSOR.extract_keywords(params.get("text", ""))}
+
+    if method in ("embed", "generate_embedding"):
+        return {"id": request_id, "result": PROCESSOR.generate_embedding(params.get("text", ""))}
+
+    return {"id": request_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+
+
+def handle_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    request_id = request.get("id")
+    if "action" in request:
+        return handle_native_action(request["action"], request)
+    if "method" in request:
+        return handle_jsonrpc(request["method"], request.get("params", {}) or {}, request_id)
+    return {"id": request_id, "status": "error", "data": None, "message": "missing 'action' or 'method'"}
+
+
+def serve() -> None:
+    for raw in sys.stdin:
+        line = raw.strip()
+        if not line:
+            continue
         try:
-            # Read input line
-            line = sys.stdin.readline()
-            if not line:
-                break
+            request = json.loads(line)
+        except json.JSONDecodeError as exc:
+            print(json.dumps({"id": None, "status": "error", "data": None,
+                              "message": f"parse error: {exc}"}), flush=True)
+            continue
 
-            # Parse request - support both JSON-RPC and simple action format
-            request = json.loads(line.strip())
+        if not isinstance(request, dict):
+            print(json.dumps({"id": None, "status": "error", "data": None,
+                              "message": "request must be a JSON object"}), flush=True)
+            continue
 
-            # Support both JSON-RPC format and simple action format
-            if 'method' in request:
-                method = request.get('method')
-                params = request.get('params', {})
-                request_id = request.get('id')
-            elif 'action' in request:
-                # Simple action format from ml_bridge.rs
-                method = request.get('action')
-                params = request
-                request_id = request.get('id')
-            else:
-                method = None
-                params = request
-                request_id = request.get('id')
+        try:
+            response = handle_request(request)
+        except Exception as exc:  # noqa: BLE001 - keep the loop alive
+            response = {"id": request.get("id"), "status": "error", "data": None,
+                        "message": f"internal error: {exc}"}
 
-            # Handle methods
-            if method == 'initialize':
-                response = {'id': request_id, 'result': {'initialized': processor.initialized}}
-
-            elif method == 'process_text':
-                text = params.get('text', '')
-                analysis_types = params.get('analysis_types', ['summary'])
-                language = params.get('language', 'en')
-
-                result = processor.process(text, analysis_types, language)
-                response = {'id': request_id, 'result': asdict(result)}
-
-            # Support action-based requests from ml_bridge.rs
-            elif method == 'sentiment':
-                text = params.get('text', '')
-                sentiment = processor.analyze_sentiment(text)
-                response = {
-                    'id': request_id,
-                    'success': True,
-                    'action': 'sentiment',
-                    'data': sentiment,
-                    'error': None,
-                    'latency_ms': 50
-                }
-
-            elif method == 'entities':
-                text = params.get('text', '')
-                entities = processor.extract_entities(text)
-                response = {
-                    'id': request_id,
-                    'success': True,
-                    'action': 'entities',
-                    'data': entities,
-                    'error': None,
-                    'latency_ms': 45
-                }
-
-            elif method == 'summary' or method == 'summarize':
-                text = params.get('text', '')
-                max_length = params.get('max_length', 3)
-                summary = processor.summarize(text, max_length if isinstance(max_length, int) else 3)
-                response = {
-                    'id': request_id,
-                    'success': True,
-                    'action': 'summary',
-                    'data': {'summary': summary},
-                    'error': None,
-                    'latency_ms': 30
-                }
-
-            elif method == 'keywords':
-                text = params.get('text', '')
-                top_k = params.get('top_k', 5)
-                keywords = processor.extract_keywords(text, top_k if isinstance(top_k, int) else 5)
-                response = {
-                    'id': request_id,
-                    'success': True,
-                    'action': 'keywords',
-                    'data': {'keywords': keywords},
-                    'error': None,
-                    'latency_ms': 35
-                }
-
-            elif method == 'embed':
-                text = params.get('text', '')
-                # Phase 3: Simple placeholder embedding (Phase 4: real model)
-                embedding = [0.1] * 384  # Placeholder vector
-                response = {
-                    'id': request_id,
-                    'success': True,
-                    'action': 'embed',
-                    'data': {'embedding': embedding, 'dimensions': 384},
-                    'error': None,
-                    'latency_ms': 20
-                }
-
-            elif method == 'rag_query':
-                query = params.get('query', '')
-                top_k = params.get('top_k', 3)
-                # Phase 3: Placeholder RAG response
-                response = {
-                    'id': request_id,
-                    'success': True,
-                    'action': 'rag_query',
-                    'data': {'results': [], 'query': query},
-                    'error': None,
-                    'latency_ms': 100
-                }
-
-            elif method == 'rag_store' or method == 'rag_index':
-                documents = params.get('documents', [])
-                response = {
-                    'id': request_id,
-                    'success': True,
-                    'action': 'rag_store',
-                    'data': {'stored_count': len(documents)},
-                    'error': None,
-                    'latency_ms': 50
-                }
-
-            elif method == 'heartbeat':
-                response = {
-                    'id': request_id,
-                    'success': True,
-                    'action': 'heartbeat',
-                    'data': {'status': 'alive'},
-                    'error': None,
-                    'latency_ms': 5
-                }
-
-            elif method == 'shutdown':
-                response = {
-                    'id': request_id,
-                    'success': True,
-                    'action': 'shutdown',
-                    'data': {'status': 'shutting_down'},
-                    'error': None,
-                    'latency_ms': 0
-                }
-                print(json.dumps(response), flush=True)
-                break
-
-            elif method == 'ping':
-                response = {'id': request_id, 'result': {'pong': True}}
-
-            else:
-                response = {
-                    'id': request_id,
-                    'error': {'code': -32601, 'message': f'Method not found: {method}'}
-                }
-
-            # Write response
+        if response is not None:
             print(json.dumps(response), flush=True)
 
-        except json.JSONDecodeError as e:
-            error_response = {
-                'id': request_id if 'request_id' in dir() else None,
-                'error': {'code': -32700, 'message': f'Parse error: {str(e)}'}
-            }
-            print(json.dumps(error_response), flush=True)
 
-        except Exception as e:
-            error_response = {
-                'id': request_id if 'request_id' in dir() else None,
-                'error': {'code': -32603, 'message': f'Internal error: {str(e)}'}
-            }
-            print(json.dumps(error_response), flush=True)
-            print(f"Error: {e}", file=sys.stderr)
+def selftest() -> int:
+    sample = "I love this great browser. It is fast and reliable. Mail me at dev@example.com for $20 on 2026-10-16."
+    failures = []
+    if PROCESSOR.analyze_sentiment(sample)["positive"] <= PROCESSOR.analyze_sentiment(sample)["negative"]:
+        failures.append("sentiment")
+    if not PROCESSOR.extract_entities(sample):
+        failures.append("entities")
+    if not PROCESSOR.summarize(sample):
+        failures.append("summary")
+    if not PROCESSOR.extract_keywords(sample):
+        failures.append("keywords")
+    if len(PROCESSOR.generate_embedding(sample)) != EMBEDDING_DIM:
+        failures.append("embedding")
+    if failures:
+        print("SELFTEST FAILED: " + ", ".join(failures), file=sys.stderr)
+        return 1
+    print("SELFTEST OK")
+    return 0
 
 
-if __name__ == '__main__':
+def main() -> None:
+    PROCESSOR.initialize()
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
+    serve()
+
+
+if __name__ == "__main__":
     main()

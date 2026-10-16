@@ -19,6 +19,10 @@ const messageQueue = [];
 // Connected state
 let isConnected = false;
 
+// Pending request/response map: id -> {resolve, reject, timer}
+const pendingRequests = new Map();
+const NATIVE_TIMEOUT_MS = 15000;
+
 /**
  * Connect to the native messaging host
  */
@@ -30,6 +34,20 @@ function connectToNativeHost() {
 
         nativePort.onMessage.addListener((response) => {
             console.log('[Zen Agentic] Received from native:', response);
+
+            // Resolve a pending request if this message carries its id
+            if (response && response.id && pendingRequests.has(response.id)) {
+                const pending = pendingRequests.get(response.id);
+                clearTimeout(pending.timer);
+                pendingRequests.delete(response.id);
+                if (response.error) {
+                    pending.reject(new Error(response.error.message || 'Native error'));
+                } else {
+                    pending.resolve(response.result !== undefined ? response.result : response);
+                }
+                return;
+            }
+
             handleNativeMessage(response);
         });
 
@@ -37,6 +55,13 @@ function connectToNativeHost() {
             console.log('[Zen Agentic] Disconnected from native host');
             isConnected = false;
             nativePort = null;
+
+            // Fail any in-flight requests so callers do not hang
+            for (const [id, pending] of pendingRequests.entries()) {
+                clearTimeout(pending.timer);
+                pending.reject(new Error('Native host disconnected'));
+                pendingRequests.delete(id);
+            }
 
             // Attempt reconnection
             if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -85,14 +110,28 @@ function sendToNative(message) {
         return Promise.reject(new Error('Not connected to native host'));
     }
 
-    try {
-        nativePort.postMessage(message);
-        return Promise.resolve();
-    } catch (error) {
-        console.error('[Zen Agentic] Failed to send to native host:', error);
-        isConnected = false;
-        return Promise.reject(error);
+    if (!message.id) {
+        message.id = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            pendingRequests.delete(message.id);
+            reject(new Error(`Native request timed out: ${message.method || message.id}`));
+        }, NATIVE_TIMEOUT_MS);
+
+        pendingRequests.set(message.id, { resolve, reject, timer });
+
+        try {
+            nativePort.postMessage(message);
+        } catch (error) {
+            clearTimeout(timer);
+            pendingRequests.delete(message.id);
+            console.error('[Zen Agentic] Failed to send to native host:', error);
+            isConnected = false;
+            reject(error);
+        }
+    });
 }
 
 /**
@@ -304,15 +343,38 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
             break;
 
         case 'send_to_native':
-            sendToNative(message.data)
-                .then(() => sendResponse({ success: true }))
+            sendToNative(message.data || {})
+                .then((result) => sendResponse({ success: true, result }))
                 .catch((error) => sendResponse({ success: false, error: error.message }));
             return true; // Keep channel open for async response
 
+        case 'get_page_text':
+            browser.tabs.query({ active: true, currentWindow: true })
+                .then((tabs) => {
+                    if (!tabs.length) {
+                        sendResponse({ error: 'No active tab' });
+                        return;
+                    }
+                    return browser.tabs.sendMessage(tabs[0].id, { action: 'get_content' })
+                        .then((content) => sendResponse(content))
+                        .catch((error) => sendResponse({ error: error.message }));
+                })
+                .catch((error) => sendResponse({ error: error.message }));
+            return true;
+
         case 'get_dom_snapshot':
-            const snapshot = domObserver.getSnapshot();
-            sendResponse(snapshot);
-            break;
+            browser.tabs.query({ active: true, currentWindow: true })
+                .then((tabs) => {
+                    if (!tabs.length) {
+                        sendResponse({ error: 'No active tab' });
+                        return;
+                    }
+                    return browser.tabs.sendMessage(tabs[0].id, { action: 'get_snapshot' })
+                        .then((snapshot) => sendResponse(snapshot))
+                        .catch(() => sendResponse(domObserver.getSnapshot()));
+                })
+                .catch((error) => sendResponse({ error: error.message }));
+            return true;
 
         case 'get_network_requests':
             const requests = networkMonitor.getRecentRequests(
