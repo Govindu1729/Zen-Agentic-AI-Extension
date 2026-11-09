@@ -1,42 +1,40 @@
 // ============================================================
-// Click Element Handler — Phase 1A: Refined flow
+// Go to URL Handler — Phase 1C: confirmation then URL prompt
 // ============================================================
 
-/** Click element — requires confirmation, then prompts for selector */
-btnClick.addEventListener('click', async () => {
-  addMessage('Click element — confirmation required.', 'system');
+/** Go to URL — requires confirmation, then prompts for URL */
+btnGo.addEventListener('click', async () => {
+  addMessage('Navigate — confirmation required.', 'system');
 
   try {
     // Step 1: Ask for confirmation
     const confirmed = await showConfirmation({
-      title: 'Confirm Element Click',
-      text: 'This will simulate a click on a DOM element. Proceed?',
-      confirmText: 'Click',
+      title: 'Confirm Navigation',
+      text: 'This will navigate the browser to a new URL. Proceed?',
+      confirmText: 'Go',
       cancelText: 'Cancel',
     });
 
     if (!confirmed) {
-      addMessage('Click cancelled by user.', 'system');
+      addMessage('Navigation cancelled by user.', 'system');
       return;
     }
 
-    // Step 2: Prompt for CSS selector
-    const selector = prompt('Enter CSS selector for the element to click:\n(e.g., "button.submit", "#submit-btn", ".menu-item"):');
-    if (!selector) {
-      addMessage('No selector provided. Click cancelled.', 'system');
+    // Step 2: Prompt for the URL
+    const url = prompt('Enter the URL to navigate to:\n(e.g., "https://example.com", "https://github.com"):');
+    if (!url) {
+      addMessage('No URL provided. Navigation cancelled.', 'system');
       return;
     }
 
-    addMessage('Preparing to click: ' + selector, 'system');
+    addMessage('Preparing navigation to: ' + url, 'system');
 
     // Step 3: Send to native host with confirmation wrapper
-    // Using sendToNativeWithConfirmation which handles the consent flow
-    // and calls click_by_uid with the selector as the UID
-    const res = await sendToNativeWithConfirmation('click_by_uid', {
-      uid: selector,
+    const res = await sendToNativeWithConfirmation('go_to_url', {
+      url,
     });
-    addMessage(`Click result: ${JSON.stringify(res)}`, 'assistant');
+    addMessage(`Navigation result: ${JSON.stringify(res)}`, 'assistant');
   } catch (err) {
-    addMessage(`Click failed: ${err.message}`, 'error');
+    addMessage(`Navigation failed: ${err.message}`, 'error');
   }
 });
