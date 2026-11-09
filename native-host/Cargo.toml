@@ -41,6 +41,18 @@ rustc_version_runtime = "0.3"
 core-graphics = "0.22"
 core-foundation = "0.9"
 
+# Windows: DXGI Desktop Duplication FFI
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "d3d11", "dxgi"] }
+
+# Linux: X11/Wayland screen capture FFI
+[target.'cfg(target_os = "linux")'.dependencies]
+x11 = { version = "2.21", features = ["xinput", "xfixes"] }
+wayland-client = { version = "0.28" }
+
+# Threads for parallel capture
+parking_lot = "0.12"
+
 [dev-dependencies]
 tokio-test = "0.4"
 

@@ -75,7 +75,7 @@ pub struct CapturedFrame {
     pub timestamp: u64,
     pub width: u32,
     pub height: u32,
-    pub data: String,  // base64-encoded JPEG
+    pub data: String,  // base64-encoded JPEG/PNG
     pub window_title: Option<String>,
     pub app_name: Option<String>,
 }
@@ -171,7 +171,7 @@ impl ScreenCaptureManager {
             // Windows/Linux: stub - return empty with platform detection hints
             let mut sources = Vec::new();
 
-            // Check for platform capabilities
+            // Check for platform capabilities via environment
             if std::env::var("WAYLAND_DISPLAY").is_ok() {
                 sources.push(CaptureSource {
                     id: "wayland-0".to_string(),
